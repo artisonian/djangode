@@ -1,7 +1,9 @@
 var http = require('http'),
     sys = require('sys'),
-    posix = require('posix'),
-	url = require('url');
+    fs = require('fs'),
+    url = require('url'),
+    querystring = require('querystring')
+;
 
 function extname(path) {
     var index = path.lastIndexOf('.');
@@ -21,27 +23,29 @@ exports.serveFile = function(req, res, filename) {
             return;
         }
         sys.puts("loading " + filename + "...");
-        var promise = posix.cat(filename, encoding);
-        promise.addCallback(function(data) {
+        fs.readFile(filename, encoding, function (error, data) {
+            if (error) {
+                status = 404;
+                body = '404'
+                sys.puts("Error loading " + filename);
+                return callback();
+            }
             body = data;
             headers = [
                 ['Content-Type', content_type],
-                ['Content-Length', encoding === 'utf8' ? encodeURIComponent(body).replace(/%../g, 'x').length : body.length]
+                ['Content-Length', (encoding === 'utf8')
+                    ? encodeURIComponent(body).replace(/%../g, 'x').length
+                    : body.length
+                ]
             ];
             sys.puts("static file " + filename + " loaded");
-            callback();
-        });
-        promise.addErrback(function() {
-            status = 404;
-            body = '404'
-            sys.puts("Error loading " + filename);
             callback();
         });
     }
     loadResponseData(function() {
         res.sendHeader(status, headers);
-        res.sendBody(body, encoding);
-        res.finish();
+        res.write(body, encoding);
+        res.close();
     });
 }
 
@@ -55,8 +59,8 @@ function respond(res, body, content_type, status) {
     res.sendHeader(status || 200, {
         'Content-Type': content_type  + '; charset=utf-8'
     });
-    res.sendBody(body);
-    res.finish();
+    res.write(body, 'utf8');
+    res.close();
 }
 exports.respond = respond;
 
@@ -66,18 +70,18 @@ exports.redirect = redirect = function(res, location, status) {
         'Content-Type': 'text/html; charset=utf-8',
         'Location': location
     });
-    res.sendBody('Redirecting...');
-    res.finish();
+    res.write('Redirecting...');
+    res.close();
 }
 
 exports.extractPost = function(req, callback) {
     req.setBodyEncoding('utf-8');
     var body = '';
-    req.addListener('body', function(chunk) {
+    req.addListener('data', function(chunk) {
         body += chunk;
     });
-    req.addListener('complete', function() {
-        callback(http.parseUri('http://fake/?' + body).params);
+    req.addListener('end', function() {
+        callback(querystring.parse(url.parse('http://fake/?' + body).query));
     });
 }
 
@@ -92,7 +96,8 @@ exports.makeApp = function(urls, options) {
     options = options || {};
     var show_404 = (options.show_404 || default_show_404);
     var show_500 = (options.show_500 || default_show_500);
-    return function(req, res) {
+
+    var app = function(req, res) {
         debuginfo.last_request = req;
         debuginfo.last_response = res;
         var path = url.parse(req.url)["pathname"];
@@ -118,6 +123,9 @@ exports.makeApp = function(urls, options) {
             show_500(req, res, e);
         }
     }
+    app.urls = {};
+    urls.forEach(function (item) { app.urls[item[2]] = item[0]; });
+    return app;
 }
 
 function default_show_404(req, res) {
